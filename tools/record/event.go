@@ -50,6 +50,7 @@ type EventSink interface {
 	Patch(oldEvent *v1.Event, data []byte) (*v1.Event, error)
 }
 
+// 事件限速和聚合处理
 // CorrelatorOptions allows you to change the default of the EventSourceObjectSpamFilter
 // and EventAggregator in EventCorrelator
 type CorrelatorOptions struct {
@@ -87,6 +88,7 @@ type CorrelatorOptions struct {
 	SpamKeyFunc EventSpamKeyFunc
 }
 
+// 事件记录接口
 // EventRecorder knows how to record events on behalf of an EventSource.
 type EventRecorder interface {
 	// Event constructs an event from the given information and puts it in the queue for sending.
@@ -109,6 +111,7 @@ type EventRecorder interface {
 	AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{})
 }
 
+// 事件发送接口
 // EventBroadcaster knows how to receive events and send them to any EventSink, watcher, or log.
 type EventBroadcaster interface {
 	// StartEventWatcher starts sending events received from this EventBroadcaster to the given

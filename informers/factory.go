@@ -53,6 +53,8 @@ import (
 // SharedInformerOption defines the functional option type for SharedInformerFactory.
 type SharedInformerOption func(*sharedInformerFactory) *sharedInformerFactory
 
+// 集中管理SharedIndexInformer
+// 在k8s内置的组件中都使用NewSharedInformerFactory来处理事件
 type sharedInformerFactory struct {
 	client           kubernetes.Interface
 	namespace        string
@@ -61,6 +63,7 @@ type sharedInformerFactory struct {
 	defaultResync    time.Duration
 	customResync     map[reflect.Type]time.Duration
 
+	// 包含多个不同资源对象类型的SharedIndexInformer
 	informers map[reflect.Type]cache.SharedIndexInformer
 	// startedInformers is used for tracking which informers have been started.
 	// This allows Start() to be called multiple times safely.
@@ -130,6 +133,16 @@ func NewSharedInformerFactoryWithOptions(client kubernetes.Interface, defaultRes
 	return factory
 }
 
+// 如果controller调用NewSharedInformerFactory来创建sharedInformerFactory实例
+// 启动时就需要调用sharedInformerFactory的Start方法，如sample-controller就是如此
+// 
+// 如果直接通过NewSharedIndexInformer或者NewSharedInformer函数来创建SharedIndexInformer实例
+// 则直接调用SharedIndexInformer的Run函数即可
+// 
+// 注意，两者返回的实例类型是不同的！
+// SharedInformerFactory（包含了value为SharedIndexInformer类型的map）
+// SharedIndexInformer
+// TODO: 两者在什么场景下使用？
 func (f *sharedInformerFactory) Start(stopCh <-chan struct{}) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -147,6 +160,7 @@ func (f *sharedInformerFactory) Start(stopCh <-chan struct{}) {
 			informer := informer
 			go func() {
 				defer f.wg.Done()
+				// 启动各个informer
 				informer.Run(stopCh)
 			}()
 			f.startedInformers[informerType] = true

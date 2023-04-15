@@ -35,6 +35,7 @@ const defaultPageBufferSize = 10
 type ListPageFunc func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error)
 
 // SimplePageFunc adapts a context-less list function into one that accepts a context.
+// 给list添加一个context
 func SimplePageFunc(fn func(opts metav1.ListOptions) (runtime.Object, error)) ListPageFunc {
 	return func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 		return fn(opts)

@@ -120,7 +120,7 @@ type DeltaFIFO struct {
 
 	// knownObjects list keys that are "known" --- affecting Delete(),
 	// Replace(), and Resync()
-	knownObjects KeyListerGetter
+	knownObjects KeyListerGetter // cache/store.go
 
 	// Used to indicate a queue is closed so a control loop can exit when a queue is empty.
 	// Currently, not used to gate any of CRUD operations.
@@ -217,9 +217,13 @@ func NewDeltaFIFO(keyFunc KeyFunc, knownObjects KeyListerGetter) *DeltaFIFO {
 // items. See also the comment on DeltaFIFO.
 func NewDeltaFIFOWithOptions(opts DeltaFIFOOptions) *DeltaFIFO {
 	if opts.KeyFunction == nil {
+		// 默认获取资源对象的namespace/name
 		opts.KeyFunction = MetaNamespaceKeyFunc
 	}
 
+	// items存储watch到的事件
+	// queue存储对象的key(namespace/name)，由keyFunc决定
+	// https://zhuanlan.zhihu.com/p/59660536 见评论
 	f := &DeltaFIFO{
 		items:        map[string]Deltas{},
 		queue:        []string{},
@@ -420,6 +424,7 @@ func (f *DeltaFIFO) queueActionLocked(actionType DeltaType, obj interface{}) err
 			f.queue = append(f.queue, id)
 		}
 		f.items[id] = newDeltas
+		// 唤醒DeltaFIFO的pop函数
 		f.cond.Broadcast()
 	} else {
 		// This never happens, because dedupDeltas never returns an empty list
@@ -523,7 +528,7 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 			if f.closed {
 				return nil, ErrFIFOClosed
 			}
-
+			// 被queueActionLocked唤醒
 			f.cond.Wait()
 		}
 		id := f.queue[0]
@@ -551,6 +556,8 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 				utiltrace.Field{Key: "Reason", Value: "slow event handlers blocking the queue"})
 			defer trace.LogIfLong(100 * time.Millisecond)
 		}
+
+		// sharedIndexInformer的HandleDelta()
 		err := process(item)
 		if e, ok := err.(ErrRequeue); ok {
 			f.addIfNotPresent(id, item)

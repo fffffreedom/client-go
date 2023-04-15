@@ -116,6 +116,8 @@ func (f *metadataSharedInformerFactory) WaitForCacheSync(stopCh <-chan struct{})
 }
 
 // NewFilteredMetadataInformer constructs a new informer for a metadata type.
+// 初始化好ListFunc和WatchFunc，并返回Informer实例
+// k8s内置资源对象使用？
 func NewFilteredMetadataInformer(client metadata.Interface, gvr schema.GroupVersionResource, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions TweakListOptionsFunc) informers.GenericInformer {
 	return &metadataInformer{
 		gvr: gvr,

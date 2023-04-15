@@ -96,6 +96,7 @@ type controller struct {
 
 // Controller is a low-level controller that is parameterized by a
 // Config and used in sharedIndexInformer.
+// 这个是cache的controller
 type Controller interface {
 	// Run does two things.  One is to construct and run a Reflector
 	// to pump objects/notifications from the Config's ListerWatcher
@@ -131,6 +132,8 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 		<-stopCh
 		c.config.Queue.Close()
 	}()
+
+	// 初始化Reflector实例
 	r := NewReflector(
 		c.config.ListerWatcher,
 		c.config.ObjectType,
@@ -150,8 +153,11 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 
 	var wg wait.Group
 
+	// 启动reflector，开始先执行list，后再执行watch
+	// watch到事件后，将信息保存到store中
 	wg.StartWithChannel(stopCh, r.Run)
 
+	// 弹出deltaFIFO中的事件来处理
 	wait.Until(c.processLoop, time.Second, stopCh)
 	wg.Wait()
 }
@@ -425,6 +431,8 @@ func processDeltas(
 			}
 		}
 
+		// 根据事件类型，先操作本地store(sharedIndexInformer.Indexer)
+		// 然后再行事件处理，即调用sharedIndexInformer.OnUpdate/OnAdd/OnDelete
 		switch d.Type {
 		case Sync, Replaced, Added, Updated:
 			if old, exists, err := clientState.Get(obj); err == nil && exists {

@@ -256,6 +256,9 @@ func (r *Reflector) resyncChan() (<-chan time.Time, func() bool) {
 func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	klog.V(3).Infof("Listing and watching %v from %s", r.expectedTypeName, r.name)
 
+	// 先list获取etcd中的资源对象，并进行缓存
+	// 最终还是调用Reflector.ListerWatcher结构体的list方法
+	// list和watch是用户写controller时要提供的！
 	err := r.list(stopCh)
 	if err != nil {
 		return err
@@ -277,6 +280,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			case <-cancelCh:
 				return
 			}
+
+			// 定期resync资源对象
 			if r.ShouldResync == nil || r.ShouldResync() {
 				klog.V(4).Infof("%s: forcing resync", r.name)
 				if err := r.store.Resync(); err != nil {
@@ -311,6 +316,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		}
 
 		// start the clock before sending the request, since some proxies won't flush headers until after the first watch event is sent
+		// 获取用户实现的watch函数
 		start := r.clock.Now()
 		w, err := r.listerWatcher.Watch(options)
 		if err != nil {
@@ -326,6 +332,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			return err
 		}
 
+		// 开始watch资源对象，并更新之前list获取到的初始资源对象
 		err = watchHandler(start, w, r.store, r.expectedType, r.expectedGVK, r.name, r.expectedTypeName, r.setLastSyncResourceVersion, r.clock, resyncerrc, stopCh)
 		retry.After(err)
 		if err != nil {
@@ -356,10 +363,14 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 // the resource version can be used for further progress notification (aka. watch).
 func (r *Reflector) list(stopCh <-chan struct{}) error {
 	var resourceVersion string
+
+	// 指定开始list的ResourceVersion
 	options := metav1.ListOptions{ResourceVersion: r.relistResourceVersion()}
 
+	// 记录超过10s的list记录
 	initTrace := trace.New("Reflector ListAndWatch", trace.Field{Key: "name", Value: r.name})
 	defer initTrace.LogIfLong(10 * time.Second)
+
 	var list runtime.Object
 	var paginatedResult bool
 	var err error
@@ -399,6 +410,7 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 			pager.PageSize = 0
 		}
 
+		// 开启list资源对象
 		list, paginatedResult, err = pager.List(context.Background(), options)
 		if isExpiredError(err) || isTooLargeResourceVersionError(err) {
 			r.setIsLastSyncResourceVersionUnavailable(true)
@@ -445,12 +457,16 @@ func (r *Reflector) list(stopCh <-chan struct{}) error {
 		return fmt.Errorf("unable to understand list result %#v: %v", list, err)
 	}
 	resourceVersion = listMetaInterface.GetResourceVersion()
+
+	// 提取list的资源对象到slice
 	initTrace.Step("Resource version extracted")
 	items, err := meta.ExtractList(list)
 	if err != nil {
 		return fmt.Errorf("unable to understand list result %#v (%v)", list, err)
 	}
 	initTrace.Step("Objects extracted")
+
+	// 更新到store中
 	if err := r.syncWith(items, resourceVersion); err != nil {
 		return fmt.Errorf("unable to sync list result: %v", err)
 	}
@@ -487,6 +503,10 @@ func watchHandler(start time.Time,
 	// Stopping the watcher should be idempotent and if we return from this function there's no way
 	// we're coming back in with the same watch interface.
 	defer w.Stop()
+
+	// watch收到的事件格式，即事件类型，以及对类的资源对象的yaml
+	// {"type":"ADDED", "object":{"kind":"Pod","apiVersion":"v1",...}}
+	// https://zhuanlan.zhihu.com/p/59660536
 
 loop:
 	for {

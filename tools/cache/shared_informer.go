@@ -244,7 +244,7 @@ func NewSharedIndexInformer(lw ListerWatcher, exampleObject runtime.Object, defa
 	realClock := &clock.RealClock{}
 	sharedIndexInformer := &sharedIndexInformer{
 		processor:                       &sharedProcessor{clock: realClock},
-		indexer:                         NewIndexer(DeletionHandlingMetaNamespaceKeyFunc, indexers),
+		indexer:                         NewIndexer(DeletionHandlingMetaNamespaceKeyFunc, indexers), // indexer的类型ThreadSafeStore
 		listerWatcher:                   lw,
 		objectType:                      exampleObject,
 		resyncCheckPeriod:               defaultEventHandlerResyncPeriod,
@@ -412,6 +412,8 @@ func (s *sharedIndexInformer) SetTransform(handler TransformFunc) error {
 	return nil
 }
 
+// 会由sharedInformerFactory的Start函数调用
+// 或者由sharedIndexInformer实例直接调用
 func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 
@@ -419,11 +421,14 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		klog.Warningf("The sharedIndexInformer has started, run more than once is not allowed")
 		return
 	}
+
+	// 初始DeltaFIFO实例
 	fifo := NewDeltaFIFOWithOptions(DeltaFIFOOptions{
 		KnownObjects:          s.indexer,
 		EmitDeltaTypeReplaced: true,
 	})
 
+	// listerWatcher由用户实现，一般通过controller-runtime或者kube-builder之类的自动生成
 	cfg := &Config{
 		Queue:            fifo,
 		ListerWatcher:    s.listerWatcher,
@@ -440,6 +445,7 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		s.startedLock.Lock()
 		defer s.startedLock.Unlock()
 
+		// 初始化sharedIndexInformer对应的controller实例
 		s.controller = New(cfg)
 		s.controller.(*controller).clock = s.clock
 		s.started = true
@@ -450,7 +456,11 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	var wg wait.Group
 	defer wg.Wait()              // Wait for Processor to stop
 	defer close(processorStopCh) // Tell Processor to stop
+
+	// 需要环境中定义了KUBE_CACHE_MUTATION_DETECTOR变量，才会起作用
 	wg.StartWithChannel(processorStopCh, s.cacheMutationDetector.Run)
+
+	// 启动所有监听者的pop和run协程，等待接收和处理消息
 	wg.StartWithChannel(processorStopCh, s.processor.run)
 
 	defer func() {
@@ -458,6 +468,8 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		defer s.startedLock.Unlock()
 		s.stopped = true // Don't want any new listeners
 	}()
+
+	// 启动controller
 	s.controller.Run(stopCh)
 }
 
@@ -510,6 +522,7 @@ func (s *sharedIndexInformer) GetController() Controller {
 	return &dummyController{informer: s}
 }
 
+// 初始化controller时，会调用AddEventHandler为其添加事件处理函数
 func (s *sharedIndexInformer) AddEventHandler(handler ResourceEventHandler) (ResourceEventHandlerRegistration, error) {
 	return s.AddEventHandlerWithResyncPeriod(handler, s.defaultEventHandlerResyncPeriod)
 }
@@ -561,10 +574,12 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 
 	listener := newProcessListener(handler, resyncPeriod, determineResyncPeriod(resyncPeriod, s.resyncCheckPeriod), s.clock.Now(), initialBufferSize)
 
+	// 若sharedInformer还没有启动，直接添加即可
 	if !s.started {
 		return s.processor.addListener(listener), nil
 	}
 
+	// sharedInformer已启动
 	// in order to safely join, we have to
 	// 1. stop sending add/update/delete notifications
 	// 2. do a list against the store
@@ -580,11 +595,14 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 	return handle, nil
 }
 
+// 处理事件
 func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
 	s.blockDeltas.Lock()
 	defer s.blockDeltas.Unlock()
 
 	if deltas, ok := obj.(Deltas); ok {
+		// 第1个参数是sharedIndexInformer的实现，其实现了ResourceEventHandler接口定义的三个方法:
+		// OnAdd,OnUpdate,OnDelete
 		return processDeltas(s, s.indexer, s.transform, deltas)
 	}
 	return errors.New("object given as Process argument is not Deltas")
@@ -862,10 +880,12 @@ func newProcessListener(handler ResourceEventHandler, requestedResyncPeriod, res
 	return ret
 }
 
+// 发送事件到addCh
 func (p *processorListener) add(notification interface{}) {
 	p.addCh <- notification
 }
 
+// 从addCh获取事件，并放入nextCh
 func (p *processorListener) pop() {
 	defer utilruntime.HandleCrash()
 	defer close(p.nextCh) // Tell .run() to stop
@@ -876,6 +896,7 @@ func (p *processorListener) pop() {
 		select {
 		case nextCh <- notification:
 			// Notification dispatched
+			// 阻塞写入，说明notification已被读取走
 			var ok bool
 			notification, ok = p.pendingNotifications.ReadOne()
 			if !ok { // Nothing to pop
@@ -885,11 +906,16 @@ func (p *processorListener) pop() {
 			if !ok {
 				return
 			}
+			// 从addCh读取到消息，且notification为nil，不用写入ringbuf
+			// 直接赋值给notification，并更新nextCh，使能上面的case
+			// 并等看run中读走数据
 			if notification == nil { // No notification to pop (and pendingNotifications is empty)
 				// Optimize the case - skip adding to pendingNotifications
 				notification = notificationToAdd
 				nextCh = p.nextCh
 			} else { // There is already a notification waiting to be dispatched
+				// 如果nextCh中的数据还没有被读走，则先写入ringbuf
+				// 好精巧的设计！！！
 				p.pendingNotifications.WriteOne(notificationToAdd)
 			}
 		}
@@ -903,6 +929,7 @@ func (p *processorListener) run() {
 	// delivering again.
 	stopCh := make(chan struct{})
 	wait.Until(func() {
+		// 每秒处理一次，一次读完nextCh中所有的消息
 		for next := range p.nextCh {
 			switch notification := next.(type) {
 			case updateNotification:
