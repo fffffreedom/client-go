@@ -187,7 +187,7 @@ func (c *controller) LastSyncResourceVersion() string {
 // also be helpful.
 func (c *controller) processLoop() {
 	for {
-		obj, err := c.config.Queue.Pop(PopProcessFunc(c.config.Process))
+		obj, err := c.config.Queue.Pop(PopProcessFunc(c.config.Process)) // HandleDeltas shared_informer.go
 		if err != nil {
 			if err == ErrFIFOClosed {
 				return

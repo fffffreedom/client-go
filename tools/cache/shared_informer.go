@@ -908,7 +908,7 @@ func (p *processorListener) pop() {
 			}
 			// 从addCh读取到消息，且notification为nil，不用写入ringbuf
 			// 直接赋值给notification，并更新nextCh，使能上面的case
-			// 并等看run中读走数据
+			// 并等着被run()中读走数据
 			if notification == nil { // No notification to pop (and pendingNotifications is empty)
 				// Optimize the case - skip adding to pendingNotifications
 				notification = notificationToAdd
